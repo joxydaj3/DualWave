@@ -1,140 +1,135 @@
 require('dotenv').config();
 const { Telegraf, Markup, session } = require('telegraf');
 const { Pool } = require('pg');
-const texts = require('./translations');
+const http = require('http');
 
-// Configurações
+// Configuração do Bot e Banco de Dados
 const bot = new Telegraf(process.env.BOT_TOKEN);
-const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
+
 const RATE = 70; // 1 USD = 70 MZN
+
+// Traduções
+const i18n = {
+    pt: {
+        start: "Bem-vindo ao DualWave! 🌊\nEscolha seu idioma:",
+        main_menu: "Menu Principal",
+        balance_btn: "💰 Saldo",
+        invest_btn: "📈 Investir",
+        team_btn: "👥 Equipe",
+        wallet_btn: "💳 Carteira",
+        lang_btn: "🇺🇸 English",
+        balance_msg: (name, usd) => `👤 *Usuário:* ${name}\n\n💵 *Saldo Disponível:*\n${usd.toFixed(2)} USD\n${(usd * RATE).toFixed(2)} MZN`,
+        select_plan: "Escolha um plano de investimento:",
+        back: "⬅️ Voltar"
+    },
+    en: {
+        start: "Welcome to DualWave! 🌊\nChoose your language:",
+        main_menu: "Main Menu",
+        balance_btn: "💰 Balance",
+        invest_btn: "📈 Invest",
+        team_btn: "👥 Team",
+        wallet_btn: "💳 Wallet",
+        lang_btn: "🇧🇷 Português",
+        balance_msg: (name, usd) => `👤 *User:* ${name}\n\n💵 *Available Balance:*\n${usd.toFixed(2)} USD\n${(usd * RATE).toFixed(2)} MZN`,
+        select_plan: "Choose an investment plan:",
+        back: "⬅️ Back"
+    }
+};
 
 // Middleware de Sessão e Idioma
 bot.use(session());
 bot.use(async (ctx, next) => {
     if (!ctx.from) return;
-    if (!ctx.session) ctx.session = {};
-    
-    const res = await pool.query("SELECT language FROM users WHERE id = $1", [ctx.from.id]);
-    ctx.session.lang = res.rows[0]?.language || 'pt';
+    try {
+        const res = await pool.query("SELECT language FROM users WHERE id = $1", [ctx.from.id]);
+        ctx.session = ctx.session || {};
+        ctx.session.lang = res.rows[0]?.language || 'pt';
+    } catch (err) {
+        ctx.session.lang = 'pt';
+    }
     return next();
 });
 
-// Formatação de Moeda Dual
-const formatCurrency = (usd) => {
-    const mzn = usd * RATE;
-    return `${usd.toFixed(2)} USD ~ ${mzn.toFixed(2)} MZN`;
-};
+// --- COMANDOS ---
 
-// Comando Inicial
-bot.start(async (ctx) => {
-    const res = await pool.query("SELECT * FROM users WHERE id = $1", [ctx.from.id]);
-    
-    if (res.rows.length === 0) {
-        return ctx.reply("Choose language / Escolha o idioma:", Markup.inlineKeyboard([
-            [Markup.button.callback("🇺🇸 English", "set_lang_en"), Markup.button.callback("🇲🇿 Português", "set_lang_pt")]
-        ]));
-    }
-    return mainMenu(ctx);
+// Comando /start
+bot.command('start', async (ctx) => {
+    const lang = ctx.session.lang;
+    return ctx.reply(i18n[lang].start, Markup.inlineKeyboard([
+        [Markup.button.callback("🇧🇷 Português", "set_pt"), Markup.button.callback("🇺🇸 English", "set_en")]
+    ]));
 });
 
-// Registro de Idioma e Contato
-bot.action(/set_lang_(.+)/, async (ctx) => {
+// Callback para definir idioma
+bot.action(/set_(pt|en)/, async (ctx) => {
     const lang = ctx.match[1];
-    ctx.session.lang = lang;
+    const userId = ctx.from.id;
     const refCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-    
-    await pool.query(
-        "INSERT INTO users (id, name, ref_code, language) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO UPDATE SET language = $4",
-        [ctx.from.id, ctx.from.first_name, refCode, lang]
-    );
 
-    ctx.reply(texts[lang].no_phone, Markup.keyboard([
-        [Markup.button.contactRequest(texts[lang].btn_contact)]
-    ]).resize());
+    try {
+        await pool.query(
+            "INSERT INTO users (id, name, language, ref_code) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO UPDATE SET language = $3",
+            [userId, ctx.from.first_name, lang, refCode]
+        );
+        ctx.session.lang = lang;
+        ctx.answerCbQuery();
+        return showMainMenu(ctx);
+    } catch (err) {
+        console.error(err);
+        ctx.reply("Error connecting to database.");
+    }
 });
 
-bot.on('contact', async (ctx) => {
-    const phone = ctx.message.contact.phone_number;
+// Função para exibir Menu Principal
+async function showMainMenu(ctx) {
     const lang = ctx.session.lang;
-    await pool.query("UPDATE users SET phone = $1 WHERE id = $2", [phone, ctx.from.id]);
-    ctx.reply("✅ Registro concluído!", Markup.removeKeyboard());
-    mainMenu(ctx);
-});
-
-// Menu Principal
-async function mainMenu(ctx) {
-    const lang = ctx.session.lang;
-    const t = texts[lang];
-    ctx.reply("DualWave🌊", Markup.keyboard([
-        [t.balance, t.invest],
-        [t.team, t.wallet],
-        [t.checkin, t.support]
+    const t = i18n[lang];
+    return ctx.reply(`🌊 *DualWave ${t.main_menu}*`, Markup.keyboard([
+        [t.balance_btn, t.invest_btn],
+        [t.team_btn, t.wallet_btn],
+        [t.lang_btn]
     ]).resize());
 }
 
-// Lógica de Saldo
-bot.hears([texts.pt.balance, texts.en.balance], async (ctx) => {
-    const res = await pool.query("SELECT * FROM users WHERE id = $1", [ctx.from.id]);
-    const u = res.rows[0];
+// Botão de Saldo
+bot.hears([i18n.pt.balance_btn, i18n.en.balance_btn], async (ctx) => {
     const lang = ctx.session.lang;
-    ctx.reply(texts[lang].stats(u.balance_usd, u.balance_usd * RATE, u.name));
+    const res = await pool.query("SELECT balance_usd FROM users WHERE id = $1", [ctx.from.id]);
+    const balance = res.rows[0]?.balance_usd || 0;
+    
+    return ctx.replyWithMarkdown(i18n[lang].balance_msg(ctx.from.first_name, balance));
 });
 
-// Lógica de Investimento (Planos)
-bot.hears([texts.pt.invest, texts.en.invest], async (ctx) => {
-    const plans = await pool.query("SELECT * FROM plans ORDER BY price_usd ASC");
-    let msg = ctx.session.lang === 'pt' ? "📈 Escolha um plano:\n\n" : "📈 Choose a plan:\n\n";
-    
-    const buttons = plans.rows.map(p => [
-        Markup.button.callback(`${p.name} - ${p.price_usd} USD`, `buy_${p.id}`)
-    ]);
-    
-    ctx.reply(msg, Markup.inlineKeyboard(buttons));
-});
-
-bot.action(/buy_(.+)/, async (ctx) => {
-    const planId = ctx.match[1];
-    const userId = ctx.from.id;
+// Botão de Investir (Exemplo de Planos)
+bot.hears([i18n.pt.invest_btn, i18n.en.invest_btn], async (ctx) => {
     const lang = ctx.session.lang;
-
-    const u = (await pool.query("SELECT balance_usd FROM users WHERE id = $1", [userId])).rows[0];
-    const p = (await pool.query("SELECT * FROM plans WHERE id = $1", [planId])).rows[0];
-
-    if (u.balance_usd < p.price_usd) return ctx.answerCbQuery(texts[lang].insufficient, { show_alert: true });
-
-    await pool.query("BEGIN");
-    await pool.query("UPDATE users SET balance_usd = balance_usd - $1 WHERE id = $2", [p.price_usd, userId]);
-    const expires = new Date(); expires.setDate(expires.getDate() + p.duration);
-    await pool.query("INSERT INTO user_plans (user_id, plan_id, expires_at) VALUES ($1, $2, $3)", [userId, planId, expires]);
-    await pool.query("COMMIT");
-
-    ctx.reply(texts[lang].buy_success);
+    // Aqui você buscaria os planos do Supabase (tabela 'plans')
+    return ctx.reply(i18n[lang].select_plan, Markup.inlineKeyboard([
+        [Markup.button.callback("Plano Alpha - 10 USD", "buy_alpha")],
+        [Markup.button.callback("Plano Beta - 50 USD", "buy_beta")]
+    ]));
 });
 
-// Suporte
-bot.hears([texts.pt.support, texts.en.support], (ctx) => {
-    const msg = ctx.session.lang === 'pt' ? "🎧 Suporte DualWave:\nContato: @seu_usuario" : "🎧 DualWave Support:\nContact: @your_user";
-    ctx.reply(msg);
+// Troca de Idioma via Menu
+bot.hears([i18n.pt.lang_btn, i18n.en.lang_btn], (ctx) => {
+    ctx.session.lang = ctx.session.lang === 'pt' ? 'en' : 'pt';
+    return showMainMenu(ctx);
 });
 
-// Sistema de Check-in
-bot.hears([texts.pt.checkin, texts.en.checkin], async (ctx) => {
-    const today = new Date().toISOString().split('T')[0];
-    const u = (await pool.query("SELECT last_checkin FROM users WHERE id = $1", [ctx.from.id])).rows[0];
-    
-    if (u.last_checkin && u.last_checkin.toISOString().split('T')[0] === today) {
-        return ctx.reply("❌ Já coletado hoje!");
-    }
+// --- INICIALIZAÇÃO ---
 
-    const bonus = 0.50; // USD
-    await pool.query("UPDATE users SET balance_usd = balance_usd + $1, last_checkin = $2 WHERE id = $3", [bonus, today, ctx.from.id]);
-    ctx.reply(`🎁 Check-in: +${formatCurrency(bonus)}`);
-});
+bot.launch().then(() => console.log("DualWave Bot Online 🚀"));
 
-// Inicialização
-bot.launch();
-console.log("DualWave Bot is running...");
+// Servidor dummy para o Railway não matar o processo
+http.createServer((req, res) => {
+    res.write('Bot is running');
+    res.end();
+}).listen(process.env.PORT || 3000);
 
-// Tratamento de erros
+// Graceful stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
