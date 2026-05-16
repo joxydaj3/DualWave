@@ -1,0 +1,2 @@
+# DualWave
+Bot de investimento
