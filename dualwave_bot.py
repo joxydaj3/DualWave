@@ -301,43 +301,224 @@ async def tratar_comprovante(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def aprovar_recusar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    acao, pid = query.data.split("|")
+    
+    # Extrai ação e ID do pedido
+    try:
+        acao, pid = query.data.split("|")
+    except:
+        return await query.edit_message_text("❌ Erro nos dados do callback.")
     
     pendentes = carregar_json(PENDENTES_FILE)
-    if pid not in pendentes: return await query.edit_message_text("❌ Pedido expirado ou já processado.")
+    if pid not in pendentes: 
+        return await query.edit_message_text("❌ Pedido expirado ou já processado.")
     
     pedido = pendentes.pop(pid)
-    uid, valor, tipo = pedido["user_id"], pedido["valor"], pedido.get("tipo", "deposito")
-    usuarios = carregar_json(USERS_FILE)
+    uid = pedido["user_id"]
+    valor = pedido["valor"]
+    tipo = pedido.get("tipo", "deposito")
     
+    usuarios = carregar_json(USERS_FILE)
+    if uid not in usuarios:
+        return await query.edit_message_text("❌ Usuário não encontrado no banco de dados.")
+
     if acao == "aprovar":
         if tipo == "deposito":
+            # 1. Atualiza Saldo e Total Depositado do Usuário
             usuarios[uid]["saldo"] += valor
-            msg_user = (
-                "🎉 **PARABÉNS! DEPÓSITO APROVADO!**\n\n"
-                f"O valor de {fmt(valor)} caiu na sua conta! ✅\n\n"
-                "🚀 **PRÓXIMO PASSO:**\n"
-                "Vá em **Ver Planos** e comece a investir para gerar lucros diários!"
-            )
-        else: # Se for saque
-            msg_user = f"✅ **SAQUE APROVADO!**\nSeu levantamento de {fmt(valor)} foi enviado com sucesso!"
+            usuarios[uid]["deposito_total"] = usuarios[uid].get("deposito_total", 0) + valor
             
-        salvar_json(USERS_FILE, usuarios)
-        await ctx.bot.send_message(uid, msg_user, parse_mode=ParseMode.MARKDOWN)
-        await query.edit_message_caption(caption=f"✅ {tipo.upper()} APROVADO!")
+            # Registro no Histórico
+            usuarios[uid].setdefault("historico", []).append({
+                "tipo": "deposito", "valor": valor, "status": "aprovado", 
+                "data": datetime.now().strftime("%d/%m/%Y %H:%M")
+            })
 
-    else:
+            # 2. LÓGICA DE COMISSÕES (Nível 1 e 2)
+            percentuais = {1: 0.07, 2: 0.03} # 7% e 3%
+            usuario_atual = usuarios[uid]
+
+            for nivel in range(1, 3):
+                pai_id = usuario_atual.get("indicador")
+                if not pai_id or pai_id not in usuarios: 
+                    break
+
+                pai = usuarios[pai_id]
+                comissao = valor * percentuais[nivel]
+                
+                # VERIFICAÇÃO DE PLANO ATIVO PARA RECEBER
+                # Verifica se existe algum plano com status "ativo"
+                tem_plano = any(p.get("status") == "ativo" for p in pai.get("planos", []))
+                
+                if tem_plano:
+                    pai["saldo"] += comissao
+                    log_msg = f"✅ *Bônus de Equipe!*\nVocê recebeu {fmt(comissao)} (Nível {nivel}) pelo depósito de um convidado!"
+                else:
+                    log_msg = f"⚠️ *Aviso de Comissão:*\nUm convidado seu depositou {fmt(valor)}, mas você PERDEU a comissão de {fmt(comissao)} porque NÃO tem um plano ativo!"
+
+                # Registra estatística de comissão (mesmo que não ganhe o saldo, para o menu Equipe)
+                if "comissoes" not in pai: pai["comissoes"] = {"1": 0, "2": 0}
+                pai["comissoes"][str(nivel)] = pai["comissoes"].get(str(nivel), 0) + comissao
+                
+                # Notifica o patrocinador (pai/avô)
+                try: await ctx.bot.send_message(chat_id=int(pai_id), text=log_msg, parse_mode=ParseMode.MARKDOWN)
+                except: pass
+                
+                usuario_atual = pai # Sobe para o próximo nível
+
+            msg_user = (
+                "🎉 *PARABÉNS! DEPÓSITO APROVADO!*\n\n"
+                f"O valor de {fmt(valor)} foi creditado! ✅\n\n"
+                "🚀 *PRÓXIMO PASSO:*\n"
+                "Vá em *Ver Planos* e comece a investir para gerar lucros diários!"
+            )
+        
+        else: # Lógica para SAQUE
+            msg_user = f"✅ *SAQUE APROVADO!*\nSeu levantamento de {fmt(valor)} foi processado e enviado!"
+
+        await ctx.bot.send_message(uid, msg_user, parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_caption(caption=f"✅ {tipo.upper()} APROVADO COM SUCESSO!")
+
+    else: # AÇÃO: RECUSAR
         if tipo == "deposito":
-            msg_user = "❌ *DEPÓSITO RECUSADO*\nSua solicitação foi negada. Verifique o comprovante ou fale com o suporte."
-        else: # Se recusar saque, devolve o saldo
+            msg_user = "❌ *DEPÓSITO RECUSADO*\nSua solicitação foi negada. Verifique se o comprovante é real ou fale com o suporte."
+        else:
+            # Se recusar saque, devolve o dinheiro para o saldo do usuário
             usuarios[uid]["saldo"] += valor
-            salvar_json(USERS_FILE, usuarios)
-            msg_user = "❌ *SAQUE RECUSADO*\nSeu pedido foi negado e o saldo devolvido à conta."
-            
+            msg_user = "❌ *SAQUE RECUSADO*\nSeu pedido foi negado e o valor foi devolvido ao seu saldo."
+
         await ctx.bot.send_message(uid, msg_user, parse_mode=ParseMode.MARKDOWN)
         await query.edit_message_caption(caption=f"❌ {tipo.upper()} RECUSADO.")
-    
+
+    # Salva todas as alterações nos arquivos
+    salvar_json(USERS_FILE, usuarios)
     salvar_json(PENDENTES_FILE, pendentes)
+
+# ==========================================
+# 👥 SISTEMA DE EQUIPE E INDICAÇÃO
+# ==========================================
+
+async def ajuda_indicacao_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = str(query.from_user.id)
+    usuarios = carregar_json(USERS_FILE)
+    user = usuarios.get(uid)
+
+    # Limpeza de tela
+    try: await query.message.delete()
+    except: pass
+
+    # Cálculos de Nível 1 e 2
+    indicados_n1 = [u for u in usuarios.values() if u.get("indicador") == uid]
+    indicados_n2 = []
+    for n1 in indicados_n1:
+        n2_list = [u for u in usuarios.values() if u.get("indicador") == n1["user_id"]]
+        indicados_n2.extend(n2_list)
+
+    # Contagem de Ativos (quem já depositou)
+    ativos_n1 = sum(1 for u in indicados_n1 if u.get("deposito_total", 0) > 0)
+    ativos_n2 = sum(1 for u in indicados_n2 if u.get("deposito_total", 0) > 0)
+    total_ativos = ativos_n1 + ativos_n2
+
+    # Comissões
+    com_n1 = user.get("comissoes", {}).get("1", 0)
+    com_n2 = user.get("comissoes", {}).get("2", 0)
+    total_ganho = com_n1 + com_n2
+
+    link = f"https://t.me/{ctx.bot.username}?start={uid}"
+    
+    msg = (
+        f"👥 *MINHA EQUIPE - DUALWAVE*\n\n"
+        f"🔗 *Seu Link:* `{link}`\n\n"
+        f"📊 *Estatísticas:* \n"
+        f"• Total Convidados: {len(indicados_n1) + len(indicados_n2)}\n"
+        f"• Convidados Ativos: {total_ativos}\n\n"
+        f"🥇 *Nível 1:* {len(indicados_n1)} usuários ({ativos_n1} ativos)\n"
+        f"💰 Ganho Nível 1: {fmt(com_n1)}\n\n"
+        f"🥈 *Nível 2:* {len(indicados_n2)} usuários ({ativos_n2} ativos)\n"
+        f"💰 Ganho Nível 2: {fmt(com_n2)}\n\n"
+        f"💵 *TOTAL GANHO:* {fmt(total_ganho)}\n"
+        f"________________________________\n"
+        f"⚠️ _Lembre-se: Você só recebe comissões se tiver um Plano Ativo!_"
+    )
+
+    kb = [
+        [InlineKeyboardButton("🚀 Compartilhar Link", url=f"https://t.me/share/url?url={link}&text=Ganhe%20dinheiro%20diariamente%20na%20DualWave!")],
+        [InlineKeyboardButton("🏆 Campanhas / Prêmios", callback_data="equipe_campanhas")],
+        [InlineKeyboardButton("⬅️ Voltar", callback_data="ajuda_start")]
+    ]
+    await query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
+
+async def equipe_campanhas_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = str(query.from_user.id)
+    usuarios = carregar_json(USERS_FILE)
+    user = usuarios.get(uid)
+
+    # Contar ativos nível 1 (para as metas)
+    indicados_n1 = [u for u in usuarios.values() if u.get("indicador") == uid]
+    ativos = sum(1 for u in indicados_n1 if u.get("deposito_total", 0) > 0)
+    
+    # Lista de prêmios já resgatados
+    resgatados = user.get("campanhas_ganhas", [])
+
+    msg = (
+        f"🏆 *CAMPANHAS DUALWAVE*\n\n"
+        f"Convide amigos ativos (que depositam) e ganhe prêmios!\n"
+        f"Seus ativos atuais: *{ativos}*\n\n"
+        f"1️⃣ *Meta 10 Ativos:* 155 MZN\n"
+        f"2️⃣ *Meta 25 Ativos:* 550 MZN\n"
+        f"3️⃣ *Meta 50 Ativos:* +1 Plano Wave Starter (350 MZN)\n"
+        f"4️⃣ *Meta 100 Ativos:* 10.000 MZN\n"
+    )
+
+    kb = []
+    # Lógica de botões de resgate
+    metas = [(10, 155, "m1"), (25, 550, "m2"), (50, "PLANO", "m3"), (100, 10000, "m4")]
+    
+    for meta, premio, cod in metas:
+        if cod in resgatados:
+            kb.append([InlineKeyboardButton(f"✅ Meta {meta} - Resgatado", callback_data="null")])
+        elif ativos >= meta:
+            kb.append([InlineKeyboardButton(f"🎁 RESGATAR META {meta}", callback_data=f"resgatar|{cod}")])
+        else:
+            kb.append([InlineKeyboardButton(f"🔒 Meta {meta} ({ativos}/{meta})", callback_data="null")])
+
+    kb.append([InlineKeyboardButton("⬅️ Voltar", callback_data="ajuda_indicacao")])
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
+
+async def resgatar_campanha_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    cod = query.data.split("|")[1]
+    uid = str(query.from_user.id)
+    usuarios = carregar_json(USERS_FILE)
+    user = usuarios[uid]
+
+    if "campanhas_ganhas" not in user: user["campanhas_ganhas"] = []
+    
+    premios = {
+        "m1": (155, "dinheiro"),
+        "m2": (550, "dinheiro"),
+        "m3": (350, "plano"),
+        "m4": (10000, "dinheiro")
+    }
+
+    valor, tipo = premios[cod]
+    user["campanhas_ganhas"].append(cod)
+
+    if tipo == "dinheiro":
+        user["saldo"] += valor
+        msg = f"🎉 Parabéns! Você resgatou seu prêmio de {fmt(valor)}!"
+    else:
+        # Dar o primeiro plano gratuitamente
+        novo_plano = {"nome": "Wave Starter", "valor": 350, "percent": 0.07, "dias": 25, "status": "ativo"}
+        user["planos"].append(novo_plano)
+        msg = "🎉 Incrível! Você ganhou um Plano Wave Starter ativo!"
+
+    salvar_json(USERS_FILE, usuarios)
+    await query.edit_message_text(msg)
 
 async def enviar_relatorio_diario(application):
     """
@@ -428,6 +609,10 @@ def main():
     app.add_handler(CallbackQueryHandler(aprovar_recusar, pattern="^(aprovar|recusar)\\|"))
     #app.add_handler(CallbackQueryHandler(ajuda_coletar_cb, pattern="^ajuda_coletar$"))
     #app.add_handler(CallbackQueryHandler(ajuda_indicacao_cb, pattern="^ajuda_indicacao$"))
+    # Handlers para o Sistema de Equipe e Campanhas
+    app.add_handler(CallbackQueryHandler(ajuda_indicacao_cb, pattern="^ajuda_indicacao$"))
+    app.add_handler(CallbackQueryHandler(equipe_campanhas_cb, pattern="^equipe_campanhas$"))
+    app.add_handler(CallbackQueryHandler(resgatar_campanha_cb, pattern="^resgatar\\|"))
 
     # 2. Registro de Mensagens (Texto e Fotos)
     app.add_handler(MessageHandler(filters.PHOTO, tratar_comprovante))
