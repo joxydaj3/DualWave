@@ -278,7 +278,6 @@ def main():
     # 1. Registro de Comandos e Callbacks
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(set_lang, pattern="^setlang\\|"))
-    app.add_handler(CallbackQueryHandler(ajuda_start_cb, pattern="^ajuda_start$"))
     app.add_handler(CallbackQueryHandler(ajuda_saldo_cb, pattern="^ajuda_saldo$"))
     app.add_handler(CallbackQueryHandler(ajuda_depositar_cb, pattern="^ajuda_depositar$"))
     app.add_handler(CallbackQueryHandler(dep_metodo_cb, pattern="^dep_metodo\\|"))
