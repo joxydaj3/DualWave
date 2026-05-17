@@ -282,7 +282,6 @@ def main():
     app.add_handler(CallbackQueryHandler(ajuda_depositar_cb, pattern="^ajuda_depositar$"))
     app.add_handler(CallbackQueryHandler(dep_metodo_cb, pattern="^dep_metodo\\|"))
     app.add_handler(CallbackQueryHandler(aprovar_recusar, pattern="^(aprovar|recusar)\\|"))
-    app.add_handler(CallbackQueryHandler(ajuda_coletar_cb, pattern="^ajuda_coletar$"))
     app.add_handler(CallbackQueryHandler(ajuda_indicacao_cb, pattern="^ajuda_indicacao$"))
 
     # 2. Registro de Mensagens (Texto e Fotos)
