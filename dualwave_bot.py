@@ -270,6 +270,68 @@ async def aprovar_recusar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     salvar_json(PENDENTES_FILE, pendentes)
 
+async def enviar_relatorio_diario(application):
+    """
+    Função que gera estatísticas completas e envia ao administrador.
+    """
+    usuarios = carregar_json(USERS_FILE)
+    hoje = datetime.now().strftime("%d/%m/%Y")
+    
+    total_users = len(usuarios)
+    novos_hoje = 0
+    saldo_total_mzn = 0
+    dep_hoje_mzn = 0
+    saq_hoje_mzn = 0
+    planos_ativos = 0
+
+    # Percorre todos os usuários para somar os dados
+    for uid, u in usuarios.items():
+        # Conta novos cadastros
+        if u.get("data_cadastro") == hoje or u.get("data_criacao") == hoje:
+            novos_hoje += 1
+        
+        # Soma saldos e planos
+        saldo_total_mzn += u.get("saldo", 0)
+        planos_ativos += len(u.get("planos", []))
+
+        # Analisa o histórico de transações do dia
+        historico = u.get("historico", [])
+        if isinstance(historico, list):
+            for item in historico:
+                data_item = item.get("data", "")
+                if hoje in data_item and item.get("status") == "aprovado":
+                    valor = float(item.get("valor", 0))
+                    if item.get("tipo") == "deposito":
+                        dep_hoje_mzn += valor
+                    elif item.get("tipo") == "saque":
+                        saq_hoje_mzn += valor
+
+    # Formatação de Moeda (USD/MZN)
+    def f_dual(mzn):
+        usd = mzn / 70 # Taxa de câmbio
+        return f"{usd:.2f} USD (~{mzn:.2f} MZN)"
+
+    # Montagem da Mensagem
+    msg = (
+        f"📊 *RELATÓRIO DIÁRIO - {NOME_BOT}*\n"
+        f"📅 Data: {hoje}\n\n"
+        f"👥 *Usuários:*\n"
+        f"• Novos hoje: {novos_hoje}\n"
+        f"• Total cadastrados: {total_users}\n\n"
+        f"💰 *Estatísticas do Site:*\n"
+        f"• Saldo total em contas: {f_dual(saldo_total_mzn)}\n"
+        f"• Total de planos ativos: {planos_ativos}\n\n"
+        f"📥 *Movimentação de Hoje (Aprovados):*\n"
+        f"• Total Depósitos: {f_dual(dep_hoje_mzn)}\n"
+        f"• Total Saques: {f_dual(saq_hoje_mzn)}\n\n"
+        f"✅ Sistema DualWave operacional."
+    )
+    
+    try:
+        await application.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        print(f"Erro ao enviar relatório: {e}")
+
 # ✅ FUNÇÃO PARA INICIAR O SCHEDULER DENTRO DO LOOP DO BOT
 async def post_init(application):
     """
