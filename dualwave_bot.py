@@ -396,7 +396,6 @@ async def aprovar_recusar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 # 👥 SISTEMA DE EQUIPE E INDICAÇÃO
 # ==========================================
-
 async def ajuda_indicacao_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -404,25 +403,34 @@ async def ajuda_indicacao_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     usuarios = carregar_json(USERS_FILE)
     user = usuarios.get(uid)
 
+    # CORREÇÃO 1: Verifica se o usuário existe no banco
+    if not user:
+        return await query.message.reply_text("❌ Erro: Seu perfil não foi encontrado. Digite /start")
+
     # Limpeza de tela
     try: await query.message.delete()
     except: pass
 
-    # Cálculos de Nível 1 e 2
-    indicados_n1 = [u for u in usuarios.values() if u.get("indicador") == uid]
-    indicados_n2 = []
-    for n1 in indicados_n1:
-        n2_list = [u for u in usuarios.values() if u.get("indicador") == n1["user_id"]]
-        indicados_n2.extend(n2_list)
+    # CORREÇÃO 2: Lógica de Nível 1 e 2 sem depender da chave "user_id" interna
+    # Buscamos diretamente pelos IDs (chaves) do dicionário usuarios
+    
+    # IDs de quem você convidou diretamente (Nível 1)
+    ids_n1 = [id_u for id_u, dados in usuarios.items() if dados.get("indicador") == uid]
+    indicados_n1 = [usuarios[id_u] for id_u in ids_n1]
+    
+    # Dados de quem os seus amigos convidaram (Nível 2)
+    indicados_n2 = [dados for id_u, dados in usuarios.items() if dados.get("indicador") in ids_n1]
 
-    # Contagem de Ativos (quem já depositou)
+    # Contagem de Ativos (quem já depositou algo)
     ativos_n1 = sum(1 for u in indicados_n1 if u.get("deposito_total", 0) > 0)
     ativos_n2 = sum(1 for u in indicados_n2 if u.get("deposito_total", 0) > 0)
     total_ativos = ativos_n1 + ativos_n2
 
-    # Comissões
-    com_n1 = user.get("comissoes", {}).get("1", 0)
-    com_n2 = user.get("comissoes", {}).get("2", 0)
+    # Comissões (Uso do .get para evitar erros se a chave não existir)
+    comissoes_data = user.get("comissoes", {})
+    # Garante que tratamos como string, pois JSON salva chaves como string
+    com_n1 = comissoes_data.get("1", 0)
+    com_n2 = comissoes_data.get("2", 0)
     total_ganho = com_n1 + com_n2
 
     link = f"https://t.me/{ctx.bot.username}?start={uid}"
