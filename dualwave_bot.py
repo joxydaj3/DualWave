@@ -290,7 +290,6 @@ def main():
     # 3. Configuração do Relatório Diário (Scheduler)
     # O PTB v20+ já integra o JobQueue, mas como você usa o APScheduler:
     scheduler = AsyncIOScheduler(timezone=timezone.utc)
-    scheduler.add_job(enviar_relatorio_diario, 'cron', hour=16, minute=27, args=[app])
     scheduler.start()
 
     print("🚀 DualWave Bot Iniciado e Rodando!")
