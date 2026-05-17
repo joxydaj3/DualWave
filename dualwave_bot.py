@@ -236,6 +236,7 @@ async def tratar_mensagens_deposito(update: Update, ctx: ContextTypes.DEFAULT_TY
             await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
         except:
             await update.message.reply_text("❌ Valor inválido. Mínimo 350 MZN.")
+            await tratar_mensagens_saque(update, ctx)
 
     # PASSO B: RECEBER HASH E PEDIR FOTO
     elif ctx.user_data.get("esperando_hash"):
@@ -296,6 +297,196 @@ async def tratar_comprovante(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg_final, parse_mode=ParseMode.MARKDOWN)
     ctx.user_data.clear()
+
+# ==========================================
+# 📤 SISTEMA DE SAQUE E CONFIGURAÇÕES BANCÁRIAS
+# ==========================================
+
+# --- 1. MENU DE CONFIGURAÇÃO DE SAQUE (MÉTODO E PIN) ---
+async def config_saque_menu_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = str(query.from_user.id)
+    user = carregar_json(USERS_FILE).get(uid)
+    
+    try: await query.message.delete()
+    except: pass
+
+    pin_status = "✅ Definido" if user.get("saque_pin") else "❌ Não definido"
+    metodo = user.get("saque_metodo", "Não configurado")
+    
+    msg = (
+        "⚙️ *CONFIGURAÇÕES DE LEVANTAMENTO*\n\n"
+        f"🔒 *PIN de Saque:* {pin_status}\n"
+        f"💳 *Método Atual:* {metodo}\n"
+        f"📱 *Número:* {user.get('saque_numero', '---')}\n"
+        f"👤 *Titular:* {user.get('saque_titular', '---')}\n\n"
+        "Seus dados devem estar corretos para evitar falhas no pagamento."
+    )
+    
+    kb = [
+        [InlineKeyboardButton("🔐 Alterar/Definir PIN", callback_data="config_saque_pin")],
+        [InlineKeyboardButton("💳 Alterar Dados Bancários", callback_data="config_saque_dados")],
+        [InlineKeyboardButton("⬅️ Voltar", callback_data="ajuda_saldo")]
+    ]
+    await query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
+
+# --- 2. INÍCIO DO PROCESSO DE SAQUE (VERIFICAÇÕES DE TRAVA) ---
+async def ajuda_sacar_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = str(query.from_user.id)
+    usuarios = carregar_json(USERS_FILE)
+    user = usuarios.get(uid)
+    
+    # A. Verificação de Horário (Seg-Sex, 10:30 - 18:30)
+    agora = datetime.now()
+    hora_atual = agora.time()
+    inicio_saque = datetime.strptime("10:30", "%H:%M").time()
+    fim_saque = datetime.strptime("18:30", "%H:%M").time()
+    
+    if agora.weekday() >= 5: # 5 = Sábado, 6 = Domingo
+        return await query.answer("❌ Saques disponíveis apenas de Segunda a Sexta-feira.", show_alert=True)
+    
+    if not (inicio_saque <= hora_atual <= fim_saque):
+        return await query.answer(f"🕒 Horário de saque: 10:30h às 18:30h.\nAgora são: {agora.strftime('%H:%M')}h", show_alert=True)
+
+    # B. Verificação de Depósito Mínimo
+    if user.get("deposito_total", 0) <= 0:
+        return await query.answer("❌ Você precisa fazer um depósito antes de realizar saques.", show_alert=True)
+
+    # C. Verificação de Plano (Ativo ou Expirado há menos de 5 dias)
+    tem_plano_recente = False
+    # Checa ativos
+    if any(p.get("status") == "ativo" for p in user.get("planos", [])):
+        tem_plano_recente = True
+    else:
+        # Checa expirados
+        for p in user.get("planos_expirados", []):
+            try:
+                data_exp = datetime.strptime(p.get("data_expiracao"), "%d/%m/%Y")
+                if (agora - data_exp).days <= 5:
+                    tem_plano_recente = True
+                    break
+            except: continue
+
+    if not tem_plano_recente:
+        return await query.answer("❌ Você precisa ter um plano ativo (ou que expirou nos últimos 5 dias).", show_alert=True)
+
+    # D. Verificação de Dados Bancários
+    if not user.get("saque_metodo") or not user.get("saque_pin"):
+        return await query.answer("⚠️ Configure seu PIN e dados bancários primeiro!", show_alert=True)
+
+    # Tudo OK, pede o valor
+    try: await query.message.delete()
+    except: pass
+    
+    ctx.user_data["esperando_val_saque"] = True
+    await query.message.reply_text(
+        "📤 *SOLICITAÇÃO DE SAQUE*\n\n"
+        f"💰 Saldo Disponível: {fmt(user['saldo'])}\n"
+        "Digite o valor que deseja sacar (MZN):", 
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# --- 3. PROCESSAMENTO DO TEXTO (VALOR E PIN) ---
+# Adicione isso na sua função 'tratar_mensagens'
+async def tratar_mensagens_saque(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = str(update.effective_user.id)
+    text = update.message.text
+    usuarios = carregar_json(USERS_FILE)
+    user = usuarios[uid]
+
+    # PASSO A: RECEBER VALOR
+    if ctx.user_data.get("esperando_val_saque"):
+        try:
+            valor = float(text)
+            if valor < 150: # Mínimo saque sugerido
+                return await update.message.reply_text("❌ Valor mínimo para saque é 150 MZN.")
+            if valor > user["saldo"]:
+                return await update.message.reply_text("❌ Saldo insuficiente.")
+            
+            taxa = valor * 0.13
+            receber = valor - taxa
+            ctx.user_data["saque_valor"] = valor
+            ctx.user_data["saque_receber"] = receber
+            ctx.user_data["esperando_val_saque"] = False
+            ctx.user_data["esperando_pin_saque"] = True
+            
+            msg = (
+                "📝 *RESUMO DO SAQUE*\n\n"
+                f"💵 Valor solicitado: {fmt(valor)}\n"
+                f"💸 Taxa (13%): {fmt(taxa)}\n"
+                f"✅ *Valor Líquido:* {fmt(receber)}\n\n"
+                "🔒 *Digite seu PIN de Saque para confirmar:* "
+            )
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+        except:
+            await update.message.reply_text("❌ Digite um valor numérico válido.")
+
+    # PASSO B: RECEBER PIN E FINALIZAR
+    elif ctx.user_data.get("esperando_pin_saque"):
+        if text != str(user.get("saque_pin")):
+            return await update.message.reply_text("❌ PIN Incorreto! Tente novamente ou cancele.")
+        
+        # Cria o pedido de saque
+        valor = ctx.user_data["saque_valor"]
+        pid = gerar_id()
+        
+        # Subtrai do saldo
+        user["saldo"] -= valor
+        salvar_json(USERS_FILE, usuarios)
+        
+        # Salva nos pendentes para o Admin
+        pendentes = carregar_json(PENDENTES_FILE)
+        pendentes[pid] = {
+            "user_id": uid, "valor": valor, "receber": ctx.user_data["saque_receber"],
+            "tipo": "saque", "metodo": user['saque_metodo'], 
+            "numero": user['saque_numero'], "titular": user['saque_titular']
+        }
+        salvar_json(PENDENTES_FILE, pendentes)
+        
+        # Notifica Admin
+        caption_admin = (
+            "📤 *PEDIDO DE SAQUE*\n\n"
+            f"👤 Usuário: {user['nome']}\n"
+            f"💵 Valor Bruto: {fmt(valor)}\n"
+            f"💸 Valor Líquido: {fmt(ctx.user_data['saque_receber'])}\n"
+            f"🏛️ Método: {user['saque_metodo']}\n"
+            f"📱 Número: `{user['saque_numero']}`\n"
+            f"👤 Titular: {user['saque_titular']}\n"
+            f"🆔 ID: `{pid}`"
+        )
+        await ctx.bot.send_message(ADMIN_ID, caption_admin, reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Aprovar Saque", callback_data=f"aprovar|{pid}"),
+            InlineKeyboardButton("❌ Recusar Saque", callback_data=f"recusar|{pid}")
+        ]]))
+
+        await update.message.reply_text("🚀 *Saque enviado com sucesso!*\nAguarde o processamento financeiro.")
+        ctx.user_data.clear()
+
+    # PASSO C: DEFINIR DADOS BANCÁRIOS
+    elif ctx.user_data.get("esperando_dados_bancarios"):
+        # Exemplo de entrada: M-Pesa, 84xxxxxx, Nome Silva
+        try:
+            partes = text.split(",")
+            user["saque_metodo"] = partes[0].strip()
+            user["saque_numero"] = partes[1].strip()
+            user["saque_titular"] = partes[2].strip()
+            salvar_json(USERS_FILE, usuarios)
+            ctx.user_data["esperando_dados_bancarios"] = False
+            await update.message.reply_text("✅ Dados bancários salvos com sucesso!")
+        except:
+            await update.message.reply_text("❌ Formato inválido. Use: Metodo, Numero, Nome")
+
+    # PASSO D: DEFINIR PIN
+    elif ctx.user_data.get("esperando_novo_pin"):
+        if len(text) < 4:
+            return await update.message.reply_text("❌ O PIN deve ter no mínimo 4 dígitos.")
+        user["saque_pin"] = text
+        salvar_json(USERS_FILE, usuarios)
+        ctx.user_data["esperando_novo_pin"] = False
+        await update.message.reply_text("✅ Seu PIN de segurança foi salvo!")
 
 # 5. APROVAÇÃO UNIVERSAL (DEPÓSITOS E SAQUES)
 async def aprovar_recusar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -621,6 +812,14 @@ def main():
     app.add_handler(CallbackQueryHandler(ajuda_indicacao_cb, pattern="^ajuda_indicacao$"))
     app.add_handler(CallbackQueryHandler(equipe_campanhas_cb, pattern="^equipe_campanhas$"))
     app.add_handler(CallbackQueryHandler(resgatar_campanha_cb, pattern="^resgatar\\|"))
+    # Callbacks do Menu de Saque e Configurações
+    app.add_handler(CallbackQueryHandler(ajuda_sacar_cb, pattern="^ajuda_sacar$"))
+    app.add_handler(CallbackQueryHandler(config_saque_menu_cb, pattern="^config_saque_menu$"))
+    
+    # Sub-configurações
+    app.add_handler(CallbackQueryHandler(lambda u, c: (c.user_data.update({"esperando_novo_pin": True}), u.callback_query.message.reply_text("🔒 Digite seu novo PIN de saque:")), pattern="^config_saque_pin$"))
+    
+    app.add_handler(CallbackQueryHandler(lambda u, c: (c.user_data.update({"esperando_dados_bancarios": True}), u.callback_query.message.reply_text("💳 Digite seus dados no formato:\nMetodo, Numero, Nome Titular")), pattern="^config_saque_dados$"))
 
     # 2. Registro de Mensagens (Texto e Fotos)
     app.add_handler(MessageHandler(filters.PHOTO, tratar_comprovante))
