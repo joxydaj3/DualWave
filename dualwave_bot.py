@@ -819,7 +819,7 @@ def main():
 
     # --- HANDLERS DO MENU PRINCIPAL E SALDO ---
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(ajuda_start_cb, pattern="^ajuda_start$"))
+    #app.add_handler(CallbackQueryHandler(ajuda_start_cb, pattern="^ajuda_start$"))
     app.add_handler(CallbackQueryHandler(ajuda_saldo_cb, pattern="^ajuda_saldo$"))
 
     # --- HANDLERS DE DEPÓSITO ---
@@ -837,7 +837,7 @@ def main():
 
     # --- MENSAGENS DE TEXTO (VALOR E PIN) ---
     app.add_handler(MessageHandler(filters.PHOTO, tratar_comprovante))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, tratar_mensagens))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, tratar_mensagens_deposito))
 
     app.run_polling(drop_pending_updates=True)
     
