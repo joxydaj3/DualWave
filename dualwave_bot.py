@@ -270,31 +270,41 @@ async def aprovar_recusar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     salvar_json(PENDENTES_FILE, pendentes)
 
+# ✅ FUNÇÃO PARA INICIAR O SCHEDULER DENTRO DO LOOP DO BOT
+async def post_init(application):
+    """
+    Esta função roda automaticamente assim que o bot inicia o loop de eventos.
+    Isso evita o erro 'no running event loop'.
+    """
+    scheduler = AsyncIOScheduler(timezone=timezone.utc)
+    # Agendar o relatório para as 16:27 UTC (Ajuste a hora se necessário)
+    scheduler.add_job(enviar_relatorio_diario, 'cron', hour=16, minute=27, args=[application])
+    scheduler.start()
+    print("⏰ Agendador de relatórios iniciado com sucesso!")
+
 # ✅ FUNÇÃO PRINCIPAL DE INICIALIZAÇÃO
 def main():
-    # Cria a aplicação
-    app = ApplicationBuilder().token(TOKEN).build()
+    # Criamos o app e adicionamos o '.post_init(post_init)'
+    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
     # 1. Registro de Comandos e Callbacks
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(set_lang, pattern="^setlang\\|"))
+    #app.add_handler(CallbackQueryHandler(ajuda_start_cb, pattern="^ajuda_start$"))
     app.add_handler(CallbackQueryHandler(ajuda_saldo_cb, pattern="^ajuda_saldo$"))
     app.add_handler(CallbackQueryHandler(ajuda_depositar_cb, pattern="^ajuda_depositar$"))
     app.add_handler(CallbackQueryHandler(dep_metodo_cb, pattern="^dep_metodo\\|"))
     app.add_handler(CallbackQueryHandler(aprovar_recusar, pattern="^(aprovar|recusar)\\|"))
-    
+    #app.add_handler(CallbackQueryHandler(ajuda_coletar_cb, pattern="^ajuda_coletar$"))
+    #app.add_handler(CallbackQueryHandler(ajuda_indicacao_cb, pattern="^ajuda_indicacao$"))
+
     # 2. Registro de Mensagens (Texto e Fotos)
     app.add_handler(MessageHandler(filters.PHOTO, tratar_comprovante))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, tratar_mensagens))
 
-    # 3. Configuração do Relatório Diário (Scheduler)
-    # O PTB v20+ já integra o JobQueue, mas como você usa o APScheduler:
-    scheduler = AsyncIOScheduler(timezone=timezone.utc)
-    scheduler.start()
-
     print("🚀 DualWave Bot Iniciado e Rodando!")
     
-    # O run_polling() aqui NÃO deve ter 'await' e NÃO deve estar dentro de 'asyncio.run'
+    # Inicia o bot (O run_polling cuida de tudo agora)
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
