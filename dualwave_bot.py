@@ -829,7 +829,7 @@ def main():
     # --- HANDLERS DE SAQUE E CONFIGURAÇÃO (O QUE ESTAVA FALTANDO) ---
     app.add_handler(CallbackQueryHandler(ajuda_sacar_cb, pattern="^ajuda_sacar$")) # <- FAZ O BOTÃO SAQUE RESPONDER
     app.add_handler(CallbackQueryHandler(config_saque_menu_cb, pattern="^config_saque_menu$")) # <- FAZ O BOTÃO CONFIG RESPONDER
-    app.add_handler(CallbackQueryHandler(config_saque_pin_cb, pattern="^config_saque_pin$")) # Função de PIN
+    #app.add_handler(CallbackQueryHandler(config_saque_pin_cb, pattern="^config_saque_pin$")) # Função de PIN
     app.add_handler(CallbackQueryHandler(config_saque_dados_cb, pattern="^config_saque_dados$")) # Função de Dados
 
     # --- APROVAÇÃO ADMIN ---
