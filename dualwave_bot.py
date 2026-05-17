@@ -431,7 +431,7 @@ def main():
 
     # 2. Registro de Mensagens (Texto e Fotos)
     app.add_handler(MessageHandler(filters.PHOTO, tratar_comprovante))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, tratar_mensagens))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, tratar_mensagens_deposito))
 
     print("🚀 DualWave Bot Iniciado e Rodando!")
     
