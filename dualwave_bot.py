@@ -149,24 +149,37 @@ async def mostrar_menu_principal(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
 async def ajuda_saldo_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    uid = str(update.effective_user.id)
+    uid = str(query.from_user.id)
     usuarios = carregar_json(USERS_FILE)
-    user = usuarios[uid]
-    lang = user["lang"]
+    user = usuarios.get(uid)
+    lang = user.get("lang", "pt")
     
+    # Limpeza visual
+    try: await query.message.delete()
+    except: pass
+
     saldo_mzn = user.get("saldo", 0)
     
+    # Texto do Saldo
+    titulo = "💰 *MEU SALDO / MY BALANCE*"
     msg = (
-        f"💰 **{TEXTOS[lang]['btn_saldo']}**\n\n"
-        f"💵 **Total:** `{fmt(saldo_mzn)}`\n"
-        f"📊 Planos Ativos: {len(user.get('planos', []))}\n"
+        f"{titulo}\n\n"
+        f"💵 *Disponível:* `{fmt(saldo_mzn)}`\n"
+        f"📊 *Planos Ativos:* {len(user.get('planos', []))}\n\n"
+        "Selecione uma opção abaixo:"
     )
     
-    buttons = [
-        [InlineKeyboardButton("📥 Depósito", callback_data="ajuda_depositar"), InlineKeyboardButton("📤 Saque", callback_data="ajuda_sacar")],
-        [InlineKeyboardButton("⬅️ Voltar", callback_data="ajuda_start")]
+    # Botões organizados: Depósito e Saque na mesma linha, Configurações embaixo.
+    kb = [
+        [
+            InlineKeyboardButton("📥 Depósito", callback_data="ajuda_depositar"),
+            InlineKeyboardButton("📤 Saque", callback_data="ajuda_sacar") # <- LIGADO À FUNÇÃO DE SAQUE
+        ],
+        [InlineKeyboardButton("⚙️ Configurar Dados de Saque", callback_data="config_saque_menu")],
+        [InlineKeyboardButton("⬅️ Voltar / Back", callback_data="ajuda_start")]
     ]
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=ParseMode.MARKDOWN)
+    
+    await query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
 
 # ==========================================
 # 📥 SISTEMA DE DEPÓSITO - DUALWAVE
@@ -336,8 +349,15 @@ async def ajuda_sacar_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     uid = str(query.from_user.id)
-    usuarios = carregar_json(USERS_FILE)
-    user = usuarios.get(uid)
+    user = carregar_json(USERS_FILE).get(uid)
+
+    # Verificação se o PIN e Dados existem ANTES de continuar
+    if not user.get("saque_pin") or not user.get("saque_metodo"):
+        return await query.message.reply_text(
+            "⚠️ *Atenção:* Você ainda não configurou seus dados de saque!\n\n"
+            "Por favor, vá em *Meu Saldo* -> *Configurar Dados de Saque* antes de tentar retirar valores.",
+            parse_mode=ParseMode.MARKDOWN
+        )
     
     # A. Verificação de Horário (Seg-Sex, 10:30 - 18:30)
     agora = datetime.now()
@@ -795,40 +815,31 @@ async def post_init(application):
 
 # ✅ FUNÇÃO PRINCIPAL DE INICIALIZAÇÃO
 def main():
-    # Criamos o app e adicionamos o '.post_init(post_init)'
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
-    # 1. Registro de Comandos e Callbacks
+    # --- HANDLERS DO MENU PRINCIPAL E SALDO ---
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(set_lang, pattern="^setlang\\|"))
-    #app.add_handler(CallbackQueryHandler(ajuda_start_cb, pattern="^ajuda_start$"))
+    app.add_handler(CallbackQueryHandler(ajuda_start_cb, pattern="^ajuda_start$"))
     app.add_handler(CallbackQueryHandler(ajuda_saldo_cb, pattern="^ajuda_saldo$"))
+
+    # --- HANDLERS DE DEPÓSITO ---
     app.add_handler(CallbackQueryHandler(ajuda_depositar_cb, pattern="^ajuda_depositar$"))
     app.add_handler(CallbackQueryHandler(dep_metodo_cb, pattern="^dep_metodo\\|"))
+
+    # --- HANDLERS DE SAQUE E CONFIGURAÇÃO (O QUE ESTAVA FALTANDO) ---
+    app.add_handler(CallbackQueryHandler(ajuda_sacar_cb, pattern="^ajuda_sacar$")) # <- FAZ O BOTÃO SAQUE RESPONDER
+    app.add_handler(CallbackQueryHandler(config_saque_menu_cb, pattern="^config_saque_menu$")) # <- FAZ O BOTÃO CONFIG RESPONDER
+    app.add_handler(CallbackQueryHandler(config_saque_pin_cb, pattern="^config_saque_pin$")) # Função de PIN
+    app.add_handler(CallbackQueryHandler(config_saque_dados_cb, pattern="^config_saque_dados$")) # Função de Dados
+
+    # --- APROVAÇÃO ADMIN ---
     app.add_handler(CallbackQueryHandler(aprovar_recusar, pattern="^(aprovar|recusar)\\|"))
-    #app.add_handler(CallbackQueryHandler(ajuda_coletar_cb, pattern="^ajuda_coletar$"))
-    #app.add_handler(CallbackQueryHandler(ajuda_indicacao_cb, pattern="^ajuda_indicacao$"))
-    # Handlers para o Sistema de Equipe e Campanhas
-    app.add_handler(CallbackQueryHandler(ajuda_indicacao_cb, pattern="^ajuda_indicacao$"))
-    app.add_handler(CallbackQueryHandler(equipe_campanhas_cb, pattern="^equipe_campanhas$"))
-    app.add_handler(CallbackQueryHandler(resgatar_campanha_cb, pattern="^resgatar\\|"))
-    # Callbacks do Menu de Saque e Configurações
-    app.add_handler(CallbackQueryHandler(ajuda_sacar_cb, pattern="^ajuda_sacar$"))
-    app.add_handler(CallbackQueryHandler(config_saque_menu_cb, pattern="^config_saque_menu$"))
-    
-    # Sub-configurações
-    app.add_handler(CallbackQueryHandler(lambda u, c: (c.user_data.update({"esperando_novo_pin": True}), u.callback_query.message.reply_text("🔒 Digite seu novo PIN de saque:")), pattern="^config_saque_pin$"))
-    
-    app.add_handler(CallbackQueryHandler(lambda u, c: (c.user_data.update({"esperando_dados_bancarios": True}), u.callback_query.message.reply_text("💳 Digite seus dados no formato:\nMetodo, Numero, Nome Titular")), pattern="^config_saque_dados$"))
 
-    # 2. Registro de Mensagens (Texto e Fotos)
+    # --- MENSAGENS DE TEXTO (VALOR E PIN) ---
     app.add_handler(MessageHandler(filters.PHOTO, tratar_comprovante))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, tratar_mensagens_deposito))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, tratar_mensagens))
 
-    print("🚀 DualWave Bot Iniciado e Rodando!")
-    
-    # Inicia o bot (O run_polling cuida de tudo agora)
     app.run_polling(drop_pending_updates=True)
-
+    
 if __name__ == "__main__":
     main()
