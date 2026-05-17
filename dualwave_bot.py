@@ -157,8 +157,8 @@ async def ajuda_saldo_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     saldo_mzn = user.get("saldo", 0)
     
     msg = (
-        f"💰 *{TEXTOS[lang]['btn_saldo']}*\n\n"
-        f"💵 *Total:* `{fmt(saldo_mzn)}`\n"
+        f"💰 **{TEXTOS[lang]['btn_saldo']}**\n\n"
+        f"💵 **Total:** `{fmt(saldo_mzn)}`\n"
         f"📊 Planos Ativos: {len(user.get('planos', []))}\n"
     )
     
@@ -168,105 +168,174 @@ async def ajuda_saldo_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=ParseMode.MARKDOWN)
 
-# ✅ DEPÓSITO (ADAPTADO)
+# ==========================================
+# 📥 SISTEMA DE DEPÓSITO - DUALWAVE
+# ==========================================
+
+# 1. ESCOLHA DO MÉTODO (Início)
 async def ajuda_depositar_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    try: await query.message.delete()
+    except: pass
+
+    lang = carregar_json(USERS_FILE).get(str(query.from_user.id), {}).get("lang", "pt")
+    msg = "📥 **DEPÓSITO / DEPOSIT**\n\nSelecione o método de pagamento:\nSelect payment method:"
     
     kb = [
-        [InlineKeyboardButton("M-Pesa 🇲🇿", callback_data="dep_metodo|M-Pesa")],
-        [InlineKeyboardButton("E-Mola 🇲🇿", callback_data="dep_metodo|E-Mola")],
-        [InlineKeyboardButton("USDT (BEP20) 🌐", callback_data="dep_metodo|Crypto")]
+        [InlineKeyboardButton("🇲🇿 M-Pesa", callback_data="dep_metodo|M-Pesa")],
+        [InlineKeyboardButton("🇲🇿 E-Mola", callback_data="dep_metodo|E-Mola")],
+        [InlineKeyboardButton("🌐 USDT (BEP20)", callback_data="dep_metodo|Crypto")],
+        [InlineKeyboardButton("⬅️ Voltar / Back", callback_data="ajuda_saldo")]
     ]
-    await query.edit_message_text("💵 Escolha o método de depósito:", reply_markup=InlineKeyboardMarkup(kb))
+    await query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
 
+# 2. ESCOLHA DO VALOR
 async def dep_metodo_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     metodo = query.data.split("|")[1]
     ctx.user_data["dep_mtd"] = metodo
-    
-    contas = {
-        "M-Pesa": "849564273",
-        "E-Mola": "877329951",
-        "Crypto": "0x0df8e7b0c172f509f6aff2791fb500462b13a5e5 (BEP20)"
-    }
-    
-    msg = f"✅ Método: *{metodo}*\nTransferir para: `{contas[metodo]}`\n\n*Digite o valor em MZN (Min: 350):*"
-    ctx.user_data["esperando_val_dep"] = True
-    await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN)
+    try: await query.message.delete()
+    except: pass
 
-# ✅ TRATAMENTO DE TEXTOS E VALORES
-async def tratar_mensagens(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = f"✅ **Método:** {metodo}\n\n💰 **Quanto deseja depositar?**\nDigite o valor em MZN (Mínimo: 350 MZN):"
+    ctx.user_data["esperando_val_dep"] = True
+    await query.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+# 3. LÓGICA DE TEXTO (VALOR E HASH) - ADICIONAR DENTRO DA SUA FUNÇÃO 'tratar_mensagens'
+async def tratar_mensagens_deposito(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     text = update.message.text
-    usuarios = carregar_json(USERS_FILE)
     
+    # PASSO A: RECEBER VALOR E MOSTRAR DADOS
     if ctx.user_data.get("esperando_val_dep"):
         try:
             valor = float(text)
             if valor < 350: raise ValueError
             ctx.user_data["dep_val"] = valor
             ctx.user_data["esperando_val_dep"] = False
-            ctx.user_data["esperando_img_dep"] = True
-            await update.message.reply_text("📸 Agora envie o *comprovante (foto)*.")
+            ctx.user_data["esperando_hash"] = True # Novo passo
+            
+            metodo = ctx.user_data["dep_mtd"]
+            titular = "DualWave Official"
+            contas = {"M-Pesa": "849564273", "E-Mola": "877329951", "Crypto": "0x0df8e7b0c172f509f6aff2791fb500462b13a5e5"}
+            
+            msg = (
+                f"⚠️ **DADOS DE PAGAMENTO**\n\n"
+                f"💵 **Valor:** {fmt(valor)}\n"
+                f"🏛️ **Método:** {metodo}\n"
+                f"👤 **Titular:** {titular}\n"
+                f"📱 **Número/Carteira:** `{contas[metodo]}`\n\n"
+                "------------------------------------------\n"
+                "📌 **INSTRUÇÕES:**\n"
+                "1. Faça a transferência.\n"
+                "2. Copie o **ID da Transação / Hash** da mensagem de confirmação.\n"
+                "3. **Cole o ID/Hash aqui no chat agora:** 👇"
+            )
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
         except:
             await update.message.reply_text("❌ Valor inválido. Mínimo 350 MZN.")
-            
-    elif ctx.user_data.get("esperando_val_saque"):
-        # Lógica de saque similar ao seu arquivo
-        pass
 
+    # PASSO B: RECEBER HASH E PEDIR FOTO
+    elif ctx.user_data.get("esperando_hash"):
+        ctx.user_data["dep_hash"] = text
+        ctx.user_data["esperando_hash"] = False
+        ctx.user_data["esperando_img_dep"] = True
+        
+        await update.message.reply_text(
+            "✅ **ID/Hash recebido!**\n\n📸 Agora, para finalizar, envie a **Foto do Comprovante**:",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+# 4. RECEBER FOTO E ENVIAR PARA ADMIN
 async def tratar_comprovante(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.user_data.get("esperando_img_dep"): return
     
     photo = update.message.photo[-1].file_id
     pid = gerar_id()
     uid = str(update.effective_user.id)
+    u_nome = update.effective_user.first_name
+    hora = datetime.now().strftime("%H:%M:%S - %d/%m/%Y")
     
+    valor = ctx.user_data["dep_val"]
+    metodo = ctx.user_data["dep_mtd"]
+    tx_hash = ctx.user_data["dep_hash"]
+    
+    # Salva nos pendentes
     pendentes = carregar_json(PENDENTES_FILE)
-    pendentes[pid] = {
-        "user_id": uid,
-        "valor": ctx.user_data["dep_val"],
-        "mtd": ctx.user_data["dep_mtd"],
-        "status": "pendente"
-    }
+    pendentes[pid] = {"user_id": uid, "valor": valor, "mtd": metodo, "hash": tx_hash, "tipo": "deposito"}
     salvar_json(PENDENTES_FILE, pendentes)
     
-    # Notificar Admin
+    # Notifica Admin Detalhado
+    caption_admin = (
+        f"💰 **NOVA SOLICITAÇÃO DE DEPÓSITO**\n\n"
+        f"👤 **Usuário:** {u_nome}\n"
+        f"🆔 **ID Usuário:** `{uid}`\n"
+        f"🕒 **Hora:** {hora}\n"
+        f"🏛️ **Método:** {metodo}\n"
+        f"💵 **Valor:** {fmt(valor)}\n"
+        f"🔗 **ID Transação/Hash:** `{tx_hash}`\n"
+        f"🎫 **ID Depósito:** `{pid}`"
+    )
+    
     await ctx.bot.send_photo(
-        ADMIN_ID, 
-        photo=photo, 
-        caption=f"💰 *Novo Depósito DualWave*\nID: {pid}\nValor: {ctx.user_data['dep_val']} MZN\nUser: {uid}",
+        ADMIN_ID, photo=photo, caption=caption_admin, parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Aprovar", callback_data=f"aprovar|{pid}"),
             InlineKeyboardButton("❌ Recusar", callback_data=f"recusar|{pid}")
         ]])
     )
-    await update.message.reply_text("✅ Comprovante enviado! Aguarde a aprovação.")
+
+    msg_final = (
+        "🚀 **PROCESSANDO DEPÓSITO!**\n\n"
+        f"Sua solicitação de {fmt(valor)} foi enviada.\n"
+        "⏳ **Tempo:** 1 a 30 minutos.\n\n"
+        "Caso não seja aprovado no prazo, contacte o suporte.\n"
+        "ID do seu depósito: `" + pid + "`"
+    )
+    await update.message.reply_text(msg_final, parse_mode=ParseMode.MARKDOWN)
     ctx.user_data.clear()
 
-# ✅ PROCESSAR APROVAÇÃO
+# 5. APROVAÇÃO UNIVERSAL (DEPÓSITOS E SAQUES)
 async def aprovar_recusar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     acao, pid = query.data.split("|")
     
     pendentes = carregar_json(PENDENTES_FILE)
-    if pid not in pendentes: return await query.edit_message_text("❌ Já processado.")
+    if pid not in pendentes: return await query.edit_message_text("❌ Pedido expirado ou já processado.")
     
     pedido = pendentes.pop(pid)
-    uid = pedido["user_id"]
+    uid, valor, tipo = pedido["user_id"], pedido["valor"], pedido.get("tipo", "deposito")
     usuarios = carregar_json(USERS_FILE)
     
     if acao == "aprovar":
-        usuarios[uid]["saldo"] += pedido["valor"]
+        if tipo == "deposito":
+            usuarios[uid]["saldo"] += valor
+            msg_user = (
+                "🎉 **PARABÉNS! DEPÓSITO APROVADO!**\n\n"
+                f"O valor de {fmt(valor)} caiu na sua conta! ✅\n\n"
+                "🚀 **PRÓXIMO PASSO:**\n"
+                "Vá em **Ver Planos** e comece a investir para gerar lucros diários!"
+            )
+        else: # Se for saque
+            msg_user = f"✅ **SAQUE APROVADO!**\nSeu levantamento de {fmt(valor)} foi enviado com sucesso!"
+            
         salvar_json(USERS_FILE, usuarios)
-        await ctx.bot.send_message(uid, f"✅ Seu depósito de {fmt(pedido['valor'])} foi aprovado!")
-        await query.edit_message_caption(caption="✅ Aprovado com sucesso!")
+        await ctx.bot.send_message(uid, msg_user, parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_caption(caption=f"✅ {tipo.upper()} APROVADO!")
+
     else:
-        await ctx.bot.send_message(uid, "❌ Seu depósito foi recusado.")
-        await query.edit_message_caption(caption="❌ Recusado.")
+        if tipo == "deposito":
+            msg_user = "❌ *DEPÓSITO RECUSADO*\nSua solicitação foi negada. Verifique o comprovante ou fale com o suporte."
+        else: # Se recusar saque, devolve o saldo
+            usuarios[uid]["saldo"] += valor
+            salvar_json(USERS_FILE, usuarios)
+            msg_user = "❌ *SAQUE RECUSADO*\nSeu pedido foi negado e o saldo devolvido à conta."
+            
+        await ctx.bot.send_message(uid, msg_user, parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_caption(caption=f"❌ {tipo.upper()} RECUSADO.")
     
     salvar_json(PENDENTES_FILE, pendentes)
 
